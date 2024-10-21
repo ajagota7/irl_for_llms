@@ -6,7 +6,6 @@ from torch import nn
 import matplotlib.pyplot as plt
 import hydra
 from omegaconf import DictConfig, OmegaConf
-import logging
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
