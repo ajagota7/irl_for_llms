@@ -1,26 +1,15 @@
 # Reference : EleutharAI PPO code scripts
 import random
 import json
-import math
 import os
 import sys
-from itertools import islice
 import sys
 from typing import List
 
 import numpy as np
-import torch
-# import tritonclient.grpc as client_util
 from datasets import load_dataset
-from huggingface_hub import snapshot_download
-from torch import nn
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
-from transformers import RobertaTokenizer, RobertaForSequenceClassification
-from transformers import pipeline
+from transformers import RobertaTokenizer, pipeline
 
-# from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModelForSequenceClassification
-# from tritonclient.utils import np_to_triton_dtype
 from sklearn.model_selection import train_test_split
 
 import trlx
@@ -63,7 +52,7 @@ def get_default_config():
             num_rollouts=64,
             chunk_size=16,
             ppo_epochs=4,
-            init_kl_coef=0.1, # 0.1
+            init_kl_coef=0.2,
             target=6,
             horizon=10000,
             gamma=1,
@@ -89,14 +78,14 @@ def get_config(model_size, default_config):
     config_name = model_size
     if config_name == "70M":
         # Following params from https://wandb.ai/eleutherai/pythia-rlhf/runs/do2vbz2o
-        default_config.train.batch_size = 16 #8
+        default_config.train.batch_size = 16 
         default_config.train.seq_length = 1024
-        default_config.train.total_steps = 5000 #750
+        default_config.train.total_steps = 5000 
         default_config.model.model_path = "lomahony/eleuther-pythia70m-hh-sft"
         default_config.model.num_layers_unfrozen = 4
         default_config.train.checkpoint_dir = "checkpoints/ppo_hh/pythia-70m/"
         default_config.tokenizer.tokenizer_path = "EleutherAI/pythia-70m"
-        default_config.optimizer.kwargs["lr"] = 3e-6 # 4e-6
+        default_config.optimizer.kwargs["lr"] = 3e-6 
         default_config.optimizer.kwargs["weight_decay"] = 0.0006
         default_config.scheduler.kwargs["eta_min"] = 5.45e-6
         default_config.method.num_rollouts = 32
@@ -111,7 +100,7 @@ def get_config(model_size, default_config):
         default_config.train.total_steps = 10000
         default_config.model.model_path = "lomahony/eleuther-pythia160m-hh-sft"
         default_config.model.num_layers_unfrozen = 4
-        default_config.train.checkpoint_dir = "checkpoints/ppo_hh/roberta-tox-pythia-160m/" #"checkpoints/ppo_hh/pythia-160m/"
+        default_config.train.checkpoint_dir = "checkpoints/ppo_hh/roberta-tox-pythia-160m/"
         default_config.tokenizer.tokenizer_path = "EleutherAI/pythia-160m"
         default_config.optimizer.kwargs["lr"] = 1e-6 # 1.7e-6
         default_config.optimizer.kwargs["weight_decay"] = 3.81e-5
@@ -213,40 +202,6 @@ def get_config(model_size, default_config):
         raise ValueError(f"Config {config_name} does not exist."
         "Please append this config into the file before calling it")
 
-# Function to split text into prompt and original output
-def split_text(text, percentage=0.5):
-    tokens = text.split() 
-    split_index = math.ceil(len(tokens) * percentage)  
-    prompt = ' '.join(tokens[:split_index]) 
-    original_output = ' '.join(tokens[split_index:]) 
-    return {'prompt': prompt, 'original_output': original_output}
-
-def get_processed_comments(dataset):
-    # Filter comments labeled as toxic and non toxic 
-    toxic_comments = dataset.filter(lambda example: example['toxic'] == 1)
-    non_toxic_comments = dataset.filter(lambda example: example['toxic'] == 0)
-
-    # Sort the toxic and non toxic comments by length
-    sorted_toxic_comments = sorted(toxic_comments, key=lambda example: len(example['comment_text']), reverse=True)
-    sorted_non_toxic_comments = sorted(non_toxic_comments, key=lambda example: len(example['comment_text']), reverse=True)
-
-    # Select the longest 1000 toxic and non toxic comments
-    longest_toxic_comments = sorted_toxic_comments[2500:3500]
-    longest_non_toxic_comments = sorted_non_toxic_comments[2500:3500]
-
-    longest_comments = [*longest_toxic_comments, *longest_non_toxic_comments]
-
-    # Process each entry in the dataset
-    processed_dataset = []
-    for data in longest_comments:
-        split_data = split_text(data['comment_text'])
-        processed_dataset.append(split_data)
-
-    # shuffle dataset
-    random.shuffle(processed_dataset)
-
-    return processed_dataset
-
 def get_toxicity_score(scores):
     "Extract value associated with a toxicity score"
     tox_scores = []
@@ -263,14 +218,7 @@ def main(default_config, hparams={}):
     trlx.logging.set_verbosity(trlx.logging.INFO)
     config = TRLConfig.update(default_config, hparams)
 
-    torch.cuda.empty_cache()
-
     ## Load data
-    # AllenAI
-    # dataset = load_dataset("allenai/real-toxicity-prompts")  # NOTE doesn't have test split; doing it ourselves
-    # all_prompts = [{"prompt": x["prompt"]["text"], "original_output": x["continuation"]["text"]} for x in dataset["train"] if x['challenging']]
-    # prompts, eval_prompts = train_test_split(all_prompts, test_size=0.2, random_state=0)
-
     # Jigsaw
     dataset = load_dataset('jaredjoss/jigsaw-long-2000')["train"]
     all_prompts = [{"prompt": x["prompt"], "original_output": x["original_output"]} for x in dataset]
@@ -308,19 +256,16 @@ def main(default_config, hparams={}):
         trainer.accelerator.print(eval_stats["reward/mean"])
 
     print("Saving:")
-    folder_name = './output/roberta_tox_classifier_custom_jigsaw_70_lr_3e6_kl_01_bs_16_steps_5000_simple_new_reward'
+    folder_name = './output/roberta_tox_classifier_custom_jigsaw_70'
     if not os.path.exists(folder_name):
         os.makedirs(folder_name)
         trainer.save_pretrained(folder_name)
 
 if __name__ == "__main__":
-    print("Starting")
     hparams = {} if len(sys.argv) == 1 else json.loads(sys.argv[1])
-
     model_size = '70M'
-    print("Model Size:  ", model_size)
 
-    wandb.init(project='rlhf_irl', notes='Fine tune 70M on SkolkovoInstitute-roberta_toxicity_classifier with Custom Jigsaw, LR 3e-6, KL 0.1, Batch Size 16, total_steps 5000 epochs 1000 - Simple - New Reward')
+    wandb.init(project='rlhf_irl', notes=f'Fine tune {model_size}')
     default_config = get_default_config()
     get_config(model_size, default_config)
     main(default_config, hparams)
