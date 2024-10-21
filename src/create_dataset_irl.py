@@ -1,15 +1,13 @@
 import torch
-import pickle
 import datasets
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer,GPTNeoXForCausalLM
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from transformers import AutoTokenizer, GPTNeoXForCausalLM
 
 from datasets import Dataset, DatasetDict
 from huggingface_hub import notebook_login, HfFolder
 
-
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 def get_generation(input_text, model, tokenizer):
     print(f"SAMPLE::\n {input_text}")
     input_ids = tokenizer.encode(input_text, return_tensors='pt').to(device)
@@ -18,8 +16,6 @@ def get_generation(input_text, model, tokenizer):
     output_text = tokenizer.decode(output[0], skip_special_tokens=True)
     print(f"SAMPLE::\n {input_text} \n Output : {output_text}")
     return output_text
-
-
 
 def upload_dataset_to_hf_hub(train_data, test_data, repo_name, private=False):
     """
@@ -33,9 +29,6 @@ def upload_dataset_to_hf_hub(train_data, test_data, repo_name, private=False):
     train_data = {key: [dic[key] for dic in train_data] for key in train_data[0]}
     test_data = {key: [dic[key] for dic in test_data] for key in test_data[0]}
     
-    # # Convert dictionary of lists to a Hugging Face Dataset
-    # dataset = Dataset.from_dict(data_formatted)
-
     # Convert list of dictionaries to a Hugging Face Dataset
     train_dataset = Dataset.from_dict(train_data)
     test_dataset = Dataset.from_dict(test_data)
@@ -58,34 +51,29 @@ def upload_dataset_to_hf_hub(train_data, test_data, repo_name, private=False):
     dataset_dict.push_to_hub(repo_name, private=private)
     print(f"Dataset uploaded to Hugging Face Hub successfully: https://huggingface.co/datasets/{repo_name}")
 
-
-
-def generate_irl_demonstrations(dataset_name, num_samples_train, model_checkpoints, model_size = "70m", debug = True):
+def generate_irl_demonstrations(dataset_name, num_samples_train, model_checkpoints, model_size, debug=True):
     dataset_prompts = datasets.load_dataset(dataset_name)
-    num_samples_train = num_samples_train # int(dataset_prompts["train"].num_rows * 0.6)
-    num_samples = 2 * num_samples_train #+ dataset_prompts["train"].num_rows
+    num_samples_train = num_samples_train
+    num_samples = 2 * num_samples_train
     if debug:
         num_samples_train = 100
         num_samples = 150
-    # model_checkpoints = ["skrishna/pythia-70m-non-toxic", "EleutherAI/pythia-70m", "random"]
     data_name = dataset_name.replace("/", "-")
-    dataset_destinations = [f"skrishna/{data_name}_{model_size}_non_toxic", f"skrishna/{data_name}_{model_size}_toxic"] #, "skrishna/random"]
+    dataset_destinations = [f"skrishna/{data_name}_{model_size}_non_toxic", f"skrishna/{data_name}_{model_size}_toxic"]
     for ind, model_chkp in enumerate(model_checkpoints):
         if model_chkp != "random":
             model = GPTNeoXForCausalLM.from_pretrained(model_chkp)
             tokenizer = AutoTokenizer.from_pretrained(model_chkp)
             train_samples = []
             for sample_id in tqdm(range(num_samples_train)):
-                input_sample = dataset_prompts["train"][sample_id]["prompt"] #["text"]
+                input_sample = dataset_prompts["train"][sample_id]["prompt"]
                 output_sample = get_generation(input_sample, model, tokenizer)
                 train_samples.append({"prompt" : input_sample, "output": output_sample})
-            # pickle.dump(out_samples, open(dataset_destinations[ind] +"_train.pkl", "wb"))
             test_samples = []
             for sample_id in tqdm(range(num_samples_train, num_samples)):
-                input_sample = dataset_prompts["train"][sample_id]["prompt"] #["text"]
+                input_sample = dataset_prompts["train"][sample_id]["prompt"]
                 output_sample = get_generation(input_sample, model, tokenizer)
                 test_samples.append({"prompt" : input_sample, "output": output_sample})
-            # pickle.dump(out_samples, open(dataset_destinations[ind] +"_test.pkl", "wb"))
             upload_dataset_to_hf_hub(train_samples, test_samples, dataset_destinations[ind])
     return dataset_destinations        
     pass
@@ -93,7 +81,7 @@ def generate_irl_demonstrations(dataset_name, num_samples_train, model_checkpoin
 if __name__ == "__main__":
     dataset_toxicity = datasets.load_dataset("jaredjoss/jigsaw-long-2000")
     model_size = "410M"
-    generate_irl_demonstrations("jaredjoss/jigsaw-long-2000", 500, ["jaredjoss/pythia-410m-roberta-lr_8e7-kl_01-steps_12000-rlhf-model", "EleutherAI/pythia-410m", "random"], model_size, debug = False)
+    generate_irl_demonstrations("jaredjoss/jigsaw-long-2000", 500, ["jaredjoss/pythia-410m-roberta-lr_8e7-kl_01-steps_12000-rlhf-model", "EleutherAI/pythia-410m", "random"], model_size, debug=False)
     
 
 

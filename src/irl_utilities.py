@@ -199,12 +199,3 @@ def data_loader(list1, list2, batch_size=2):
         batch1 = [row[-1] for row in list1[i:min(i+batch_size, len(list1))]]
         batch2 = [row[-1] for row in list2[i:min(i+batch_size, len(list2))]]
         yield batch1, batch2
-
-def get_generation(input_text, model, tokenizer):
-    print(f"SAMPLE::\n {input_text}")
-    input_ids = tokenizer.encode(input_text, return_tensors='pt').to(device)
-    model = model.to(device)
-    output = model.generate(input_ids, max_length=100, temperature=0)
-    output_text = tokenizer.decode(output[0], skip_special_tokens=True)
-    print(f"SAMPLE::\n {input_text} \n Output : {output_text}")
-    return output_text
