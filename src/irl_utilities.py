@@ -1,34 +1,24 @@
 from transformers import AutoTokenizer, GPTNeoXForCausalLM, RobertaTokenizer, RobertaForSequenceClassification
-import datasets
 import torch
 from torch import nn
 import pickle
-import logging
 import numpy as np
 from scipy import stats
 from scipy.spatial.distance import cosine
-from sklearn.metrics import mean_squared_error, accuracy_score, f1_score
-import argparse
-import matplotlib.pyplot as plt
-from tqdm import tqdm
+from sklearn.metrics import accuracy_score, f1_score
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class RewardModel(nn.Module):
     def __init__(self, checkpoint_path, eos_token_id):
         super().__init__()
-        # model = AutoModelForCausalLM.from_pretrained(checkpoint_path)
         model = GPTNeoXForCausalLM.from_pretrained(checkpoint_path)
         self.model = model
-        self.v_head = nn.Linear(model.gpt_neox.embed_in.embedding_dim, 2, bias=False)  # TODO make not magic number
+        self.v_head = nn.Linear(model.gpt_neox.embed_in.embedding_dim, 2, bias=False)
         self.eos_token_id = eos_token_id
     def forward(self, input_ids):
-        returns = self.model(input_ids, output_hidden_states=True).hidden_states[-1][:, -1, :]#[0] #, 1)
-        # print("Returns : ", returns.shape, returns)
+        returns = self.model(input_ids, output_hidden_states=True).hidden_states[-1][:, -1, :]
         returns_2 = self.v_head(returns)
-        # Applying softmax to returns_2 along the last dimension
-        # returns_2 = torch.nn.functional.softmax(returns_2, dim=-1).squeeze(-1)
-        # print("Returns : ", returns.shape, returns_2)
         return returns_2
     
 def get_dataset_train(policy_name = "skrishna/pythia-70m-non-toxic"):
@@ -47,7 +37,6 @@ def get_initial_model(learn_rm):
     """
     Returns initial reward model. 
     """
-    # if learn_rm == "EleutherAI/pythia-70m":
     reward_tokenizer = AutoTokenizer.from_pretrained(learn_rm)
     reward_model = RewardModel(learn_rm, reward_tokenizer.eos_token_id)
     return reward_model.requires_grad_(), reward_tokenizer
@@ -168,14 +157,12 @@ def get_evaluation(test_data, true_rm , learned_rm, binary=False):
     kendall_tau = stats.kendalltau(true_rewards, learned_rewards)[0]
     spearman = stats.spearmanr(true_rewards, learned_rewards)[0]
     cosine_sim = 1 - cosine(true_rewards, learned_rewards)
-    mse = mean_squared_error(true_rewards, learned_rewards)
     accuracy, f1 = calculate_accuracy_f1(true_rewards, learned_rewards)
                                     
     print("Correlation between true and learned reward models: ", pearson_correlation)
     print("Euclidean distance between true and learned reward models: ", euc_norm)
     print("Kendall_tau between true and learned reward models: ", kendall_tau)
     print("Spearman between true and learned reward models: ", spearman)
-    print("MSE between true and learned reward models: ", mse)
     print("Accuracy between true and learned reward models: ", accuracy)
     print("F1 Score between true and learned reward models: ", f1)
 
@@ -185,28 +172,18 @@ def get_evaluation(test_data, true_rm , learned_rm, binary=False):
         'kendall_tau': kendall_tau,
         'spearman': spearman,
         'cosine_similarity': cosine_sim,
-        'mean_squared_error': mse,
         'accuracy': accuracy,
         'f1': f1
     }
-
     return evals
-
-def get_policy_outputs(model, sample):
-    """
-     -- NTBU -- 
-    """
-    pass
 
 def get_reward_score(reward_model, input_text, tokenizer, true_reward=False):
     """
     Takes reward model and input and returns reward score. 
     """
     input_ids = tokenizer.encode(input_text, return_tensors='pt', max_length=512, truncation=True).to(device)
-    # potential GPU/CPU mismatch fix
     reward_model = reward_model.to(device)
     
-    # print("REWARD MODEL: " , reward_model(input_ids))
     if true_reward:
         output = reward_model(input_ids).logits
     else:
@@ -231,73 +208,3 @@ def get_generation(input_text, model, tokenizer):
     output_text = tokenizer.decode(output[0], skip_special_tokens=True)
     print(f"SAMPLE::\n {input_text} \n Output : {output_text}")
     return output_text
-
-
-
-def irl_function(num_epochs=100, current_directory="./models", sub_model_name="reward_model", model_size="70M"):
-    """
-    Step 1 : Generate dataset with random policy 
-    Step 2 : Initiate model with K million parameters
-    Step 3 : Implement the loss function
-    Step 4 : Evaluate reward model on toxicity.  
-    """
-    # Obtain dataset
-    data_name = "allenai-real-toxicity-prompts"
-    dataset_ntoxic = datasets.load_dataset(f"skrishna/{data_name}_{model_size}_non_toxic")
-    data_set_ntoxic = [sample["output"] for sample in dataset_ntoxic["train"]]
-    dataset_toxic = datasets.load_dataset(f"skrishna/{data_name}_{model_size}_toxic")
-    data_set_toxic = [sample["output"] for sample in dataset_toxic["train"]]
-
-    # Obtain training functions with hyper-params
-    init_model, tokenizer = get_initial_model(model_size)
-    loss = get_irl_loss()
-    optimizer = get_optimizer(init_model)
-    
-    epoch_losses = []  # Store average loss per epoch
-
-    # Training loop
-    for num_epoch in tqdm(range(num_epochs)):
-        epoch_loss = []  # Store loss for each batch
-        print(f"Processing Epoch {num_epoch}..")
-        for sample_n_toxic, sample_toxic in data_loader(data_set_ntoxic, data_set_toxic):
-            policy_outputs_nt = get_reward_score(init_model, sample_n_toxic, tokenizer)
-            policy_outputs_t = get_reward_score(init_model, sample_toxic, tokenizer)
-            loss_value = loss(policy_outputs_nt, policy_outputs_t)
-            epoch_loss.append(torch.mean(loss_value).item())  # Convert to Python number and store
-            loss_value.backward()
-            optimizer.step()
-        
-        # Calculate and store the average loss for this epoch
-        average_loss = sum(epoch_loss) / len(epoch_loss)
-        epoch_losses.append(average_loss)
-        print(f"Epoch {num_epoch} Average Loss: {average_loss}")
-
-    # Plotting
-    plt.plot(range(num_epochs), epoch_losses, label='Loss')
-    plt.xlabel('Epoch')
-    plt.ylabel('Average Loss')
-    plt.title('Training Loss Over Epochs')
-    plt.legend()
-    plt_path = f"training_loss_over_epochs_{data_name}_{model_size}.png"
-    plt.savefig(plt_path)
-    
-    # save trained reward model
-    current_directory_repo = current_directory + f"/{sub_model_name}"
-    torch.save(init_model.state_dict(), current_directory_repo)
-    
-    # init_model.save_pretrained(f"skrishna/{data_name}_{model_size}_irl")
-    # tokenizer.save_pretrained(f"skrishna/{data_name}_{model_size}_irl")
-
-
-
-if __name__ == "__main__":
-    argparse = argparse.ArgumentParser()
-    argparse.add_argument("--rm", type=str, default="jaredjoss/pythia-70m-roberta-rlhf-model")
-    argparse.add_argument("--pm", type=str, default="EleutherAI/pythia-70m")
-    argparse.add_argument("--dataset", type=str, default="google/jigsaw_toxicity_pred")
-    argparse.add_argument("--ne", type=int, default=10)
-    argparse.add_argument("--sfx", type=str, default="irl")
-    args = argparse.parse_args()
-    # train_dataset = get_dataset_train(args.rm)
-    irl_function(num_epochs=args.ne)
-    #irl_function(args)
