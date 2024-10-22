@@ -2,7 +2,7 @@ true_rm: s-nlp/roberta_toxicity_classifier
 learn_rm_size: &learn_rm_size 70m
 learn_rm: &learn_rm EleutherAI/pythia-
 from_checkpoint: false # false or path/to/ckpt
-learn_rm_path: saved_models/70m_epochs_30_lr_0.00001/learned_rm_ #${learn_rm}_${true_rm}.pt
+learn_rm_path: saved_models/learned_rm_ #${learn_rm}_${true_rm}.pt
 policy_lm: jaredjoss/pythia-70m-roberta-lr_3e6-kl_0035-steps_600-rlhf-model
 org_lm: EleutherAI/pythia-70m
 evaluation_dataset: jaredjoss/jigsaw-long-2000
