@@ -1,6 +1,6 @@
 # Inverse Reinforcement Learning for Large Language Models
 
-This repository implements **Inverse Reinforcement Learning (IRL)** for extracting reward models from **Reinforcement Learning from Human Feedback (RLHF)**-fine-tuned Large Language Models (LLMs). The project includes scripts for fine-tuning LLMs, applying Max-Margin IRL, and evaluating reward models.
+This repository implements **Inverse Reinforcement Learning (IRL)** for extracting reward models from **Reinforcement Learning from Human Feedback (RLHF)**-fine-tuned Large Language Models (LLMs). The project includes scripts for fine-tuning LLMs, creating IRL datasets, and applying Max-Margin IRL.
 
 ## Environment Setup
 
@@ -47,5 +47,11 @@ python src/create_dataset_irl.py
 After generating the demonstrations, you can implement Max-Margin IRL and extract the reward function from the RLHF-trained LLM:
 
 ```bash
-python irl.py
+python src/irl.py
+```
+
+### Run RLHF using IRL extracted reward model
+After extracting the reward model from the RLHF'd LLM, you can use this reward model to fine-tune other LLMs:
+```bash
+python src/train_rlhf_irl_rm.py
 ```
