@@ -192,6 +192,9 @@ def create_plots(base_dir="/content/drive/MyDrive/irl_experiments", exp_type="ex
     if not all_runs_metrics:
         print(f"No runs found for experiment type: {exp_type}")
         return
+        
+    num_runs = len(all_runs_metrics)
+    n_epochs = max(max(run.keys()) for run in all_runs_metrics) + 1
     
     # All metrics to plot
     metrics_to_plot = {
@@ -209,7 +212,8 @@ def create_plots(base_dir="/content/drive/MyDrive/irl_experiments", exp_type="ex
     n_metrics = len(metrics_to_plot)
     n_rows = (n_metrics + 1) // 2  # Calculate number of rows needed
     fig, axes = plt.subplots(n_rows, 2, figsize=(15, 5*n_rows))
-    fig.suptitle(f'Training Metrics Over Epochs ({exp_type})', size=16, y=1.02)
+    title = f'IRL Accuracy and Correlation Over {num_runs} runs of {n_epochs} Epochs'
+    fig.suptitle(title, size=16, y=1.02)
     axes = axes.flatten()
     
     # Colors for different metrics
@@ -236,7 +240,31 @@ def create_plots(base_dir="/content/drive/MyDrive/irl_experiments", exp_type="ex
     plt.show()
     plt.close()
     
-    print(f"Plots saved to: {save_path}")
+    # Create normalized plot with all metrics
+    plt.figure(figsize=(15, 10))
+    for idx, (metric_key, metric_name) in enumerate(metrics_to_plot.items()):
+        means, conf_intervals = compute_statistics(all_runs_metrics, metric_key)
+        if means and conf_intervals:
+            epochs = range(len(means))
+            
+            # Normalize the values
+            means_norm = (means - np.min(means)) / (np.max(means) - np.min(means))
+            lower_ci = [(ci[0] - np.min(means)) / (np.max(means) - np.min(means)) for ci in conf_intervals]
+            upper_ci = [(ci[1] - np.min(means)) / (np.max(means) - np.min(means)) for ci in conf_intervals]
+            
+            plt.plot(epochs, means_norm, label=metric_name, color=colors[idx])
+            plt.fill_between(epochs, lower_ci, upper_ci, color=colors[idx], alpha=0.2)
+    
+    plt.xlabel('Epoch')
+    plt.ylabel('Normalized Value')
+    plt.title(f'IRL Metrics Over {num_runs} runs of {n_epochs} Epochs (Normalized)')
+    plt.grid(True, alpha=0.3)
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    
+    save_path_norm = os.path.join(base_dir, f'{exp_type}_all_metrics_normalized.png')
+    plt.savefig(save_path_norm, bbox_inches='tight', dpi=300)
+    plt.show()
+    plt.close()
     
     # Create the dual axis plot
     create_dual_axis_plot(base_dir, exp_type)
