@@ -15,8 +15,17 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 @hydra.main(version_base=None, config_path="conf", config_name="config")
 def main(cfg : DictConfig) -> None:
-    # Set up save directories
-    run_dir, models_dir, metrics_dir = setup_save_directories(cfg)
+    # Debug prints
+    print("\nDEBUG CONFIG:")
+    if hasattr(cfg.experiment, 'experiments_base_dir'):
+        print(f"Base dir from config: {cfg.experiment.experiments_base_dir}")
+    print(f"Environment variable: {os.getenv('EXPERIMENT_DIR')}")
+    
+    # Set up save directories with configurable base dir
+    experiments_base_dir = os.getenv('EXPERIMENT_DIR', "/content/drive/MyDrive/irl_experiments")
+    print(f"Using base dir: {experiments_base_dir}")
+    
+    run_dir, models_dir, metrics_dir = setup_save_directories(cfg, experiments_base_dir)
     
     # Save config
     save_config(cfg, run_dir)

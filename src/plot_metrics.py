@@ -110,6 +110,9 @@ def create_dual_axis_plot(base_dir="/content/drive/MyDrive/irl_experiments", exp
     
     # Collect all runs
     all_runs_metrics = collect_all_runs(base_dir, exp_type)
+
+    n_runs = len(all_runs_metrics)
+    n_epochs = max(max(run.keys()) for run in all_runs_metrics) + 1
     
     if not all_runs_metrics:
         print(f"No runs found for experiment type: {exp_type}")
@@ -158,7 +161,7 @@ def create_dual_axis_plot(base_dir="/content/drive/MyDrive/irl_experiments", exp
     ax1.grid(True, alpha=0.3)
     
     # Customize title
-    plt.title(f'{exp_type} IRL Accuracy and Correlation for Each Epoch over {len(epochs)} Epochs')
+    plt.title(f'{exp_type} IRL Accuracy and Correlation Over {n_runs} Runs of {n_epochs} Epochs')
     
     # Combine legends from both axes
     lines1, labels1 = ax1.get_legend_handles_labels()
@@ -212,7 +215,7 @@ def create_plots(base_dir="/content/drive/MyDrive/irl_experiments", exp_type="ex
     n_metrics = len(metrics_to_plot)
     n_rows = (n_metrics + 1) // 2  # Calculate number of rows needed
     fig, axes = plt.subplots(n_rows, 2, figsize=(15, 5*n_rows))
-    title = f'IRL Accuracy and Correlation Over {num_runs} runs of {n_epochs} Epochs'
+    title = f'{exp_type} IRL Accuracy and Correlation Over {num_runs} Runs of {n_epochs} Epochs'
     fig.suptitle(title, size=16, y=1.02)
     axes = axes.flatten()
     
@@ -257,7 +260,7 @@ def create_plots(base_dir="/content/drive/MyDrive/irl_experiments", exp_type="ex
     
     plt.xlabel('Epoch')
     plt.ylabel('Normalized Value')
-    plt.title(f'IRL Metrics Over {num_runs} runs of {n_epochs} Epochs (Normalized)')
+    plt.title(f'{exp_type} IRL Metrics Over {num_runs} runs of {n_epochs} Epochs (Normalized)')
     plt.grid(True, alpha=0.3)
     plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
     

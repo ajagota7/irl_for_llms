@@ -23,4 +23,4 @@ training:
   n_epochs: 30
   optimizer: adam
   lr: 0.00001
-  reward_func_mode: logit # logit or contrastive
+experiments_base_dir: ${oc.env:EXPERIMENT_DIR,/content/drive/MyDrive}
