@@ -1,172 +1,46 @@
 from transformers import AutoTokenizer, GPTNeoXForCausalLM, RobertaTokenizer, RobertaForSequenceClassification
 import torch
 from torch import nn
-import pickle
 import numpy as np
 from scipy import stats
 from scipy.spatial.distance import cosine
 from sklearn.metrics import accuracy_score, f1_score
-
-# New imports for feature extraction
-from transformers import AutoModel
-from sentence_transformers import SentenceTransformer
-import spacy
-from collections import Counter
+from datasets import load_dataset
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-
-class FeatureExtractor:
-    def __init__(self, feature_type, model_checkpoint, device='cuda'):
-        self.feature_type = feature_type
-        self.device = device
-        self.model = AutoModel.from_pretrained(model_checkpoint).to(device)
-        self.tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
-        
-        # Initialize additional models based on feature type
-        if 'semantic' in feature_type:
-            self.semantic_model = SentenceTransformer('all-MiniLM-L6-v2').to(device)
-        if 'structural' in feature_type:
-            self.nlp = spacy.load('en_core_web_sm')
-            
-    def extract_token_features(self, text):
-        """Extract token-level embeddings and n-gram statistics"""
-        inputs = self.tokenizer(text, return_tensors='pt', padding=True, truncation=True).to(self.device)
-        outputs = self.model(**inputs)
-        token_embeddings = outputs.last_hidden_state
-        
-        # Add n-gram statistics
-        ngrams = self._compute_ngrams(text)
-        
-        return {
-            'token_embeddings': token_embeddings,
-            'ngram_stats': ngrams
-        }
-    
-    def extract_semantic_features(self, text):
-        """Extract semantic features using sentence transformers and topic modeling"""
-        # Get sentence embeddings
-        sentence_embedding = self.semantic_model.encode(text)
-        
-        # Add topic scores
-        topic_scores = self._compute_topic_scores(text)
-        
-        return {
-            'sentence_embedding': sentence_embedding,
-            'topic_scores': topic_scores
-        }
-    
-    def extract_structural_features(self, text):
-        """Extract syntactic and structural features using spaCy"""
-        doc = self.nlp(text)
-        
-        # Get POS tags and dependency relations
-        pos_features = [token.pos_ for token in doc]
-        dep_features = [token.dep_ for token in doc]
-        
-        # Compute structural metrics
-        complexity_score = self._compute_complexity(doc)
-        
-        return {
-            'pos_features': pos_features,
-            'dep_features': dep_features,
-            'complexity': complexity_score
-        }
-    
-    def _compute_ngrams(self, text, n=3):
-        """Helper function to compute n-gram statistics"""
-        tokens = text.split()
-        ngrams = []
-        for i in range(len(tokens)-n+1):
-            ngrams.append(' '.join(tokens[i:i+n]))
-        return Counter(ngrams)
-    
-    def _compute_topic_scores(self, text):
-        """Helper function for topic modeling"""
-        # Implement topic modeling logic here
-        pass
-    
-    def _compute_complexity(self, doc):
-        """Helper function to compute structural complexity metrics"""
-        # Implement complexity metrics here
-        pass
-    
-    def get_features(self, text):
-        """Main interface to get all requested feature types"""
-        features = {}
-        
-        if 'token' in self.feature_type:
-            features.update(self.extract_token_features(text))
-        if 'semantic' in self.feature_type:
-            features.update(self.extract_semantic_features(text))
-        if 'structural' in self.feature_type:
-            features.update(self.extract_structural_features(text))
-            
-        return features
-
-
-'''
-Old Reward Model Structure
-
-class RewardModel(nn.Module):
-    def __init__(self, checkpoint_path, eos_token_id):
-        super().__init__()
-        model = GPTNeoXForCausalLM.from_pretrained(checkpoint_path)
-        self.model = model
-        self.v_head = nn.Linear(model.gpt_neox.embed_in.embedding_dim, 2, bias=False)
-        self.eos_token_id = eos_token_id
-    def forward(self, input_ids):
-        returns = self.model(input_ids, output_hidden_states=True).hidden_states[-1][:, -1, :]
-        returns_2 = self.v_head(returns)
-        return returns_2
-
-'''
-
-# GPU optimized RM
 class RewardModel(nn.Module):
     def __init__(self, checkpoint_path, eos_token_id):
         super().__init__()
         # Load model with CPU offloading for large models
         model = GPTNeoXForCausalLM.from_pretrained(
             checkpoint_path,
-            device_map='auto',  # Automatically handle device placement
-            torch_dtype=torch.float16  # Use half precision
+            device_map='auto',
+            torch_dtype=torch.float32  # Use float32 instead of float16
         )
         self.model = model
         self.v_head = nn.Linear(model.gpt_neox.embed_in.embedding_dim, 2, bias=False)
+        self.v_head = self.v_head.to(device)
         self.eos_token_id = eos_token_id
         
-    @torch.cuda.amp.autocast()  # Enable automatic mixed precision
     def forward(self, input_ids):
-        with torch.no_grad():  # Disable gradient computation when not training
-            hidden_states = self.model(input_ids, output_hidden_states=True).hidden_states[-1]
-            last_hidden = hidden_states[:, -1, :]
-            del hidden_states  # Explicitly free memory
-            torch.cuda.empty_cache()
-            returns = self.v_head(last_hidden)
-            return returns
+        # Get the hidden states from the base model
+        outputs = self.model(input_ids, output_hidden_states=True)
+        hidden_states = outputs.hidden_states[-1]
+        last_hidden = hidden_states[:, -1, :].to(device)
+        
+        # Apply the value head
+        value = self.v_head(last_hidden)
+        return value.float()  # Ensure output is float32
 
-
-
-
-def get_dataset_train(policy_name = "skrishna/pythia-70m-non-toxic"):
-    """
-       policy_name =  ["skrishna/pythia-70m-non-toxic", "EleutherAI/pythia-70m", "random"]
-    """
-    if policy_name == "skrishna/pythia-70m-non-toxic":
-        dataset_samples = pickle.load(open("datasets/non_toxic_train.pkl", "rb"))
-        return dataset_samples
-    elif policy_name == "EleutherAI/pythia-70m":
-        dataset_samples = pickle.load(open("datasets/toxic_train.pkl", "rb"))
-        return dataset_samples
-    pass
-
-def get_initial_model(learn_rm):
+def get_initial_model(checkpoint_path):
     """
     Returns initial reward model. 
     """
-    reward_tokenizer = AutoTokenizer.from_pretrained(learn_rm)
-    reward_model = RewardModel(learn_rm, reward_tokenizer.eos_token_id)
+    reward_tokenizer = AutoTokenizer.from_pretrained(checkpoint_path)
+    reward_tokenizer.pad_token = reward_tokenizer.eos_token
+    reward_model = RewardModel(checkpoint_path, reward_tokenizer.eos_token_id)
+    reward_model = reward_model.to(device)
     return reward_model.requires_grad_(), reward_tokenizer
 
 def load_saved_model(checkpoint_path, learn_rm):
@@ -174,59 +48,56 @@ def load_saved_model(checkpoint_path, learn_rm):
     Loads a saved model state from the given checkpoint path.
     """
     reward_tokenizer = AutoTokenizer.from_pretrained(learn_rm)
+    reward_tokenizer.pad_token = reward_tokenizer.eos_token
     reward_model = RewardModel(learn_rm, reward_tokenizer.eos_token_id)
     reward_model.load_state_dict(torch.load(checkpoint_path))
-    reward_model.to(device)
+    reward_model = reward_model.to(device)
     return reward_model.requires_grad_(), reward_tokenizer
 
-def get_true_reward_model(true_rm = "s-nlp/roberta_toxicity_classifier"):
+def get_true_reward_model(true_rm="s-nlp/roberta_toxicity_classifier"):
     """
     Returns true reward model. 
     """
-    if true_rm == "s-nlp/roberta_toxicity_classifier":
-        # load tokenizer and model weights
-        reward_tokenizer = RobertaTokenizer.from_pretrained('SkolkovoInstitute/roberta_toxicity_classifier')
-        reward_model = RobertaForSequenceClassification.from_pretrained('SkolkovoInstitute/roberta_toxicity_classifier').to(device)
+    reward_tokenizer = RobertaTokenizer.from_pretrained('SkolkovoInstitute/roberta_toxicity_classifier')
+    reward_tokenizer.pad_token = reward_tokenizer.eos_token
+    reward_model = RobertaForSequenceClassification.from_pretrained('SkolkovoInstitute/roberta_toxicity_classifier').to(device)
+    return reward_model, reward_tokenizer
 
-        return reward_model, reward_tokenizer
-
-def get_irl_loss(loss_type = "max_margin"):
+def get_irl_loss(loss_type="max_margin"):
     """
     Returns loss function for optimization. 
     """
     if loss_type == "max_margin":
         def loss(reward_n_t, reward_t):
             def custom_operator(input_vector):
-                # Create masks for positive and negative values
-                positive_mask = input_vector > 0
-                negative_mask = input_vector < 0
-                # Multiply positive values by -1 and negative values by -2
-                input_vector[positive_mask] *= -1
-                input_vector[negative_mask] *= -2
-                return input_vector
+                # Create new tensor with gradients
+                result = input_vector.clone()
+                # Apply operations
+                result = torch.where(result > 0, -result, -2 * result)
+                return result
+            
             reward_diff = reward_n_t - reward_t
             reward_diff_dir = custom_operator(reward_diff)
-            return reward_diff_dir
+            return torch.mean(reward_diff_dir)
+            
     elif loss_type == "squared":
         def loss(reward_n_t: torch.Tensor, reward_t: torch.Tensor) -> torch.Tensor:
             reward_diff = reward_n_t - reward_t
-            reward_diff_sq = torch.square(reward_diff)
-            return reward_diff_sq
+            return torch.mean(torch.square(reward_diff))
+            
     elif loss_type == "logistic":
         def loss(reward_n_t: torch.Tensor, reward_t: torch.Tensor) -> torch.Tensor:
             reward_diff = reward_n_t - reward_t
-            reward_diff_sigmoid = torch.sigmoid(reward_diff)
-            reward_diff_logistic = -torch.log(reward_diff_sigmoid)
-            return reward_diff_logistic
+            return -torch.mean(torch.log(torch.sigmoid(reward_diff)))
+            
     elif loss_type == "hinge":
         def loss(reward_n_t: torch.Tensor, reward_t: torch.Tensor) -> torch.Tensor:
             reward_diff = reward_n_t - reward_t
-            reward_diff_hinge = torch.nn.functional.relu(1 - reward_diff)
-            return reward_diff_hinge
+            return torch.mean(torch.nn.functional.relu(1 - reward_diff))
     
     return loss
 
-def get_optimizer(model, optim_type = "adam", lr = 0.00001, momentum = 0.9):
+def get_optimizer(model, optim_type="adam", lr=0.00001, momentum=0.9):
     """
     Select and return suitable optimizer with training hyper-params. 
     """
@@ -239,29 +110,15 @@ def lp_norm(x, y, p):
     """
     Returns the lp norm between two lists.
     """
-    # Ensure both x and y are numpy arrays for element-wise operations
     x = np.array(x)
     y = np.array(y)
-    
-    # Calculate the lp norm
     diff = np.abs(x - y)
     lp_norm_value = np.sum(diff**p)**(1/p)
     return lp_norm_value
 
-def calculate_accuracy_f1(true_rewards, learned_rewards):
-    true_rewards_labels = [0 if reward > 0 else 1 for reward in true_rewards]
-    learned_rewards_labels = [0 if reward > 0 else 1 for reward in learned_rewards]
-    return accuracy_score(true_rewards_labels, learned_rewards_labels), f1_score(true_rewards_labels, learned_rewards_labels)
-
-# get evaluation with rm and gt labels
 def get_evaluation(samples_data, true_rm, learned_rm, batch_size=32):
     """
     Returns all metrics comparing against both reward model predictions and ground truth labels.
-    
-    Args:
-        samples_data: Dictionary containing:
-            - 'samples': List of text samples to evaluate
-            - 'ground_truth_labels': List of corresponding ground truth labels (1 for toxic, 0 for non-toxic)
     """
     true_rm, true_rm_tokenizer = get_true_reward_model(true_rm)
     learned_rm, learned_rm_tokenizer = learned_rm[0], learned_rm[1]
@@ -345,18 +202,19 @@ def get_reward_score(reward_model, input_text, tokenizer, batch_size=32):
             max_length=512
         ).to(device)
         
-        with torch.no_grad(), torch.cuda.amp.autocast():
-            output = reward_model(input_ids.input_ids)
-            output = -1 * output[:, -1]
-            all_outputs.append(output.cpu())
+        output = reward_model(input_ids.input_ids)
+        output = -1 * output[:, -1]  # Get the second logit and negate it
+        all_outputs.append(output.float())  # Ensure float32
             
         # Clear memory
         del input_ids
         torch.cuda.empty_cache()
     
-    return torch.cat(all_outputs, dim=0)
+    # Concatenate all outputs
+    final_output = torch.cat(all_outputs, dim=0)
+    return final_output.float()  # Ensure float32
 
-def data_loader(list1, list2, batch_size=32):  # Increased from 2 to 32
+def data_loader(list1, list2, batch_size=32):
     """
     Creates batches with dynamic batch sizing based on available GPU memory
     """
@@ -382,35 +240,4 @@ def data_loader(list1, list2, batch_size=32):  # Increased from 2 to 32
         batch1 = list1[i:min(i+batch_size, len(list1))]
         batch2 = list2[i:min(i+batch_size, len(list2))]
         
-        # Process all samples in the batch at once
-        if isinstance(batch1[0], str):  # If dealing with raw text
-            yield batch1, batch2
-        else:  # If dealing with tokenized data
-            yield [row[-1] for row in batch1], [row[-1] for row in batch2]
-
-
-# # Add to irl_utilities.py
-# def analyze_feature_contributions(model, dataset, feature_config):
-#     """Analyze how different features contribute to reward predictions"""
-#     feature_importance = defaultdict(list)
-    
-#     for sample in dataset:
-#         # Get base prediction
-#         base_pred = model(sample)
-        
-#         # Analyze each feature type
-#         features = model.feature_extractor.get_features(sample)
-#         for feature_type in feature_config['type']:
-#             if feature_type in features:
-#                 # Zero out this feature type
-#                 modified_features = features.copy()
-#                 modified_features[feature_type] *= 0
-                
-#                 # Get prediction without this feature
-#                 mod_pred = model.forward_with_features(modified_features)
-                
-#                 # Calculate importance as prediction difference
-#                 importance = torch.norm(base_pred - mod_pred)
-#                 feature_importance[feature_type].append(importance.item())
-    
-#     return feature_importance
+        yield batch1, batch2
