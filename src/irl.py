@@ -155,7 +155,6 @@ from save_utils import setup_save_directories, save_model_and_metrics, save_conf
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Define all metrics we want to track
 METRICS = [
     'accuracy',
     'pearson_correlation',
@@ -178,13 +177,14 @@ def main(cfg : DictConfig) -> None:
     experiments_base_dir = os.getenv('EXPERIMENT_DIR', "/content/drive/MyDrive/irl_experiments")
     print(f"Using base dir: {experiments_base_dir}")
     
-    # Set up directories and save config
     run_dir, models_dir, metrics_dir = setup_save_directories(cfg, experiments_base_dir)
     save_config(cfg, run_dir)
     
     # Processing the config
     cfg.experiment.learn_rm = cfg.experiment.learn_rm + cfg.experiment.learn_rm_size
-    cfg.experiment.learn_rm_path = cfg.experiment.learn_rm_path + cfg.experiment.learn_rm.replace("/", "-") + "_" + cfg.experiment.true_rm.replace("/", "-") + f"lr_{cfg.experiment.training.lr}" + f"_ss_{cfg.experiment.training.sample_size}"
+    cfg.experiment.learn_rm_path = cfg.experiment.learn_rm_path + cfg.experiment.learn_rm.replace("/", "-") + "_" + \
+                                  cfg.experiment.true_rm.replace("/", "-") + f"lr_{cfg.experiment.training.lr}" + \
+                                  f"_ss_{cfg.experiment.training.sample_size}"
     
     cfg.experiment.candidate_policies[-1] = cfg.experiment.learn_rm
     cfg.experiment.non_toxic_rm = cfg.experiment.learn_rm
@@ -199,18 +199,27 @@ def main(cfg : DictConfig) -> None:
             cfg.experiment.learn_rm_size
         )
 
-    # Load training datasets
+    # Load and prepare training data with labels
+    print("\nPreparing training dataset...")
     dataset = datasets.load_dataset(cfg.experiment.evaluation_dataset)
-    train_samples = [sample["original_output"] for sample in dataset["train"]]
+    train_data = {
+        'samples': [sample["original_output"] for sample in dataset["train"]],
+        'ground_truth_labels': [1 if sample["toxic"] else 0 for sample in dataset["train"]]
+    }
     
-    # Load test datasets from candidate policies
-    dataset_ntoxic = datasets.load_dataset(cfg.experiment.candidate_policy_paths[0])
-    data_set_ntoxic = [sample["output"] for sample in dataset_ntoxic["train"]]
+    # Load and prepare test data with labels
+    print("Preparing test dataset...")
     dataset_toxic = datasets.load_dataset(cfg.experiment.candidate_policy_paths[1])
+    dataset_ntoxic = datasets.load_dataset(cfg.experiment.candidate_policy_paths[0])
     data_set_toxic = [sample["output"] for sample in dataset_toxic["train"]]
-    test_samples = data_set_toxic + data_set_ntoxic
+    data_set_ntoxic = [sample["output"] for sample in dataset_ntoxic["train"]]
+    
+    test_data = {
+        'samples': data_set_toxic + data_set_ntoxic,
+        'ground_truth_labels': [1] * len(data_set_toxic) + [0] * len(data_set_ntoxic)
+    }
 
-    # Initialization
+    # Model Initialization
     if cfg.experiment.from_checkpoint != False:
         init_model, tokenizer = load_saved_model(f"src/{cfg.experiment.from_checkpoint}", cfg.experiment.learn_rm)
     else:
@@ -231,25 +240,12 @@ def main(cfg : DictConfig) -> None:
         
         # Get evaluation metrics for both train and test
         print("Evaluating on training set...")
-        train_evals = get_evaluation(train_samples, cfg.experiment.true_rm, [init_model, tokenizer])
+        train_evals = get_evaluation(train_data, cfg.experiment.true_rm, [init_model, tokenizer])
         print("Evaluating on test set...")
-        test_evals = get_evaluation(test_samples, cfg.experiment.true_rm, [init_model, tokenizer])
+        test_evals = get_evaluation(test_data, cfg.experiment.true_rm, [init_model, tokenizer])
         
-        # Store metrics
-        train_metrics = {
-            'epoch': epoch,
-            'set': 'train',
-            **train_evals
-        }
-        
-        test_metrics = {
-            'epoch': epoch,
-            'set': 'test',
-            **test_evals
-        }
-        
-        train_metrics_history.append(train_metrics)
-        test_metrics_history.append(test_metrics)
+        train_metrics_history.append(train_evals)
+        test_metrics_history.append(test_evals)
         
         # Training loop with mixed precision
         print("Starting training iteration...")
@@ -275,8 +271,8 @@ def main(cfg : DictConfig) -> None:
         combined_metrics = {
             'epoch': epoch,
             'average_loss': average_loss,
-            'train_metrics': train_metrics,
-            'test_metrics': test_metrics
+            'train_metrics': train_evals,
+            'test_metrics': test_evals
         }
         
         save_model_and_metrics(init_model, combined_metrics, epoch, models_dir, metrics_dir)
@@ -287,11 +283,15 @@ def main(cfg : DictConfig) -> None:
         
         print("\nTraining Metrics:")
         for metric in METRICS:
-            print(f"  {metric}: {train_metrics[metric]:.4f}")
+            rm_key = f"{metric}_rm"
+            gt_key = f"{metric}_gt"
+            print(f"  {metric:20} - RM: {train_evals[rm_key]:.4f}, GT: {train_evals[gt_key]:.4f}")
             
         print("\nTest Metrics:")
         for metric in METRICS:
-            print(f"  {metric}: {test_metrics[metric]:.4f}")
+            rm_key = f"{metric}_rm"
+            gt_key = f"{metric}_gt"
+            print(f"  {metric:20} - RM: {test_evals[rm_key]:.4f}, GT: {test_evals[gt_key]:.4f}")
             
         # Clear memory at end of epoch
         torch.cuda.empty_cache()
@@ -301,7 +301,8 @@ def main(cfg : DictConfig) -> None:
 
 def plot_metrics(losses, train_metrics, test_metrics, run_dir):
     """Create and save plots of training metrics."""
-    os.makedirs(os.path.join(run_dir, 'plots'), exist_ok=True)
+    plots_dir = os.path.join(run_dir, 'plots')
+    os.makedirs(plots_dir, exist_ok=True)
     
     # Plot losses
     plt.figure(figsize=(10, 6))
@@ -310,24 +311,36 @@ def plot_metrics(losses, train_metrics, test_metrics, run_dir):
     plt.ylabel('Average Loss')
     plt.title('Training Loss Over Epochs')
     plt.legend()
-    plt.savefig(os.path.join(run_dir, 'plots', 'loss_plot.png'))
+    plt.savefig(os.path.join(plots_dir, 'loss_plot.png'))
     plt.close()
 
-    # Plot each metric comparing train vs test
+    # Plot each metric comparing train vs test for both RM and GT
     for metric in METRICS:
-        plt.figure(figsize=(10, 6))
+        plt.figure(figsize=(12, 6))
         
-        train_values = [m[metric] for m in train_metrics]
-        test_values = [m[metric] for m in test_metrics]
+        rm_key = f"{metric}_rm"
+        gt_key = f"{metric}_gt"
         
-        plt.plot(train_values, label=f'Train {metric}')
-        plt.plot(test_values, label=f'Test {metric}')
+        # Get values
+        train_rm_values = [m[rm_key] for m in train_metrics]
+        test_rm_values = [m[rm_key] for m in test_metrics]
+        train_gt_values = [m[gt_key] for m in train_metrics]
+        test_gt_values = [m[gt_key] for m in test_metrics]
+        
+        # Plot RM values
+        plt.plot(train_rm_values, label=f'Train (RM)', linestyle='-', color='blue')
+        plt.plot(test_rm_values, label=f'Test (RM)', linestyle='--', color='blue')
+        
+        # Plot GT values
+        plt.plot(train_gt_values, label=f'Train (GT)', linestyle='-', color='red')
+        plt.plot(test_gt_values, label=f'Test (GT)', linestyle='--', color='red')
         
         plt.xlabel('Epoch')
         plt.ylabel(metric)
         plt.title(f'{metric} Over Epochs')
         plt.legend()
-        plt.savefig(os.path.join(run_dir, 'plots', f'{metric}_plot.png'))
+        plt.grid(True, alpha=0.3)
+        plt.savefig(os.path.join(plots_dir, f'{metric}_plot.png'))
         plt.close()
 
 if __name__ == "__main__":
